@@ -1,1 +1,4 @@
-"""Go code generator (stub — not yet implemented)."""
+"""Go code generator."""
+from .generator import GoGenerator
+
+__all__ = ["GoGenerator"]

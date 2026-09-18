@@ -1,1 +1,4 @@
-"""Java code generator (stub — not yet implemented)."""
+"""Java code generator."""
+from .generator import JavaGenerator
+
+__all__ = ["JavaGenerator"]
