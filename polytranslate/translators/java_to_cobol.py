@@ -22,12 +22,18 @@ _LLM_TIMEOUT_SECONDS = 60
 class _AnthropicLLM:
     """Thin wrapper around the Anthropic SDK satisfying the .invoke() contract."""
 
-    def __init__(self, model: str = "claude-sonnet-5") -> None:
+    def __init__(self, model: str = "claude-sonnet-5", api_key: Optional[str] = None,
+                 base_url: Optional[str] = None) -> None:
         try:
             import anthropic
         except ImportError:
             raise ImportError("pip install anthropic") from None
-        self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        kwargs: dict = {}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = anthropic.Anthropic(**kwargs)
         self._model = model
 
     def invoke(self, prompt: str):
@@ -44,14 +50,23 @@ class _AnthropicLLM:
 
 
 class _OpenAILLM:
-    """Thin wrapper around the OpenAI SDK satisfying the .invoke() contract."""
+    """Thin wrapper around the OpenAI SDK satisfying the .invoke() contract.
 
-    def __init__(self, model: str = "gpt-4o") -> None:
+    Also used for OpenAI-compatible APIs: KeyBridge, DeepSeek, Groq, Ollama.
+    """
+
+    def __init__(self, model: str = "gpt-4o", api_key: Optional[str] = None,
+                 base_url: Optional[str] = None) -> None:
         try:
             import openai
         except ImportError:
             raise ImportError("pip install openai") from None
-        self._client = openai.OpenAI()  # reads OPENAI_API_KEY from env
+        kwargs: dict = {}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = openai.OpenAI(**kwargs)
         self._model = model
 
     def invoke(self, prompt: str):
@@ -67,6 +82,60 @@ class _OpenAILLM:
         return _Result()
 
 
+def _build_llm_from_env(model: Optional[str]) -> object:
+    """Detect LLM config from environment variables.
+
+    Priority order:
+      1. KEYBRIDGE_URL + KEYBRIDGE_TOKEN  — proxy (all keys centralised in KeyBridge)
+      2. ANTHROPIC_API_KEY               — Anthropic direct
+      3. OPENAI_API_KEY                  — OpenAI direct
+      4. DEEPSEEK_API_KEY                — DeepSeek direct (OpenAI-compatible)
+      5. GROQ_API_KEY                    — Groq direct (OpenAI-compatible)
+
+    Raises EnvironmentError when no option is configured.
+    """
+    kb_url = os.environ.get("KEYBRIDGE_URL", "").strip()
+    kb_token = os.environ.get("KEYBRIDGE_TOKEN", "").strip()
+    if kb_url and kb_token:
+        # KeyBridge speaks both the Anthropic and OpenAI messages API.
+        # Use the OpenAI-compatible path so a single _OpenAILLM handles any
+        # model the proxy routes to (claude, gpt-4o, deepseek-chat, …).
+        return _OpenAILLM(
+            model=model or "claude-sonnet-5",
+            api_key=kb_token,
+            base_url=kb_url.rstrip("/") + "/v1",
+        )
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return _AnthropicLLM(model=model or "claude-sonnet-5")
+
+    if os.environ.get("OPENAI_API_KEY"):
+        return _OpenAILLM(model=model or "gpt-4o")
+
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        return _OpenAILLM(
+            model=model or "deepseek-chat",
+            api_key=os.environ["DEEPSEEK_API_KEY"],
+            base_url="https://api.deepseek.com/v1",
+        )
+
+    if os.environ.get("GROQ_API_KEY"):
+        return _OpenAILLM(
+            model=model or "llama-3.3-70b-versatile",
+            api_key=os.environ["GROQ_API_KEY"],
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+    raise EnvironmentError(
+        "No LLM configured. Set one of:\n"
+        "  KEYBRIDGE_URL + KEYBRIDGE_TOKEN  (proxy — recommended for teams)\n"
+        "  ANTHROPIC_API_KEY\n"
+        "  OPENAI_API_KEY\n"
+        "  DEEPSEEK_API_KEY\n"
+        "  GROQ_API_KEY"
+    )
+
+
 # ------------------------------------------------------------------
 # Translator
 # ------------------------------------------------------------------
@@ -74,15 +143,20 @@ class _OpenAILLM:
 class JavaToCOBOLTranslator:
     """Translate Java code to COBOL, respecting company coding standards.
 
-    Two ways to create:
+    Three ways to create:
 
-    1. Bring your own LLM (LangChain-compatible or any object with .invoke())::
+    1. Auto-detect from environment (KeyBridge, Anthropic, OpenAI, DeepSeek, Groq)::
+
+        translator = JavaToCOBOLTranslator.from_env()
+
+    2. Bring your own LLM (LangChain-compatible or any object with .invoke())::
 
         translator = JavaToCOBOLTranslator(llm=ChatAnthropic(...))
 
-    2. Auto-detect from environment (reads ANTHROPIC_API_KEY / OPENAI_API_KEY)::
+    3. No LLM — useful for standards loading / prompt inspection only::
 
-        translator = JavaToCOBOLTranslator.from_env()
+        translator = JavaToCOBOLTranslator()
+        translator.load_standards("CLAIMS.cbl")
     """
 
     def __init__(self, llm=None, standards: Optional[COBOLStandards] = None) -> None:
@@ -91,28 +165,15 @@ class JavaToCOBOLTranslator:
 
     @classmethod
     def from_env(cls, model: Optional[str] = None) -> "JavaToCOBOLTranslator":
-        """Create a translator using an API key from the environment.
+        """Create a translator from environment variables.
 
-        Checks ANTHROPIC_API_KEY first, then OPENAI_API_KEY.
-        Raises EnvironmentError if neither is set.
+        Detection order:
+          KEYBRIDGE_URL + KEYBRIDGE_TOKEN → Anthropic → OpenAI → DeepSeek → Groq
 
         Args:
-            model: Override the default model name. Pass e.g. ``"claude-opus-5"``
-                   or ``"gpt-4o-mini"``. When omitted, uses ``claude-sonnet-5``
-                   (Anthropic) or ``gpt-4o`` (OpenAI).
+            model: Override the default model name for the detected provider.
         """
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            llm = _AnthropicLLM(model=model or "claude-sonnet-5")
-        elif os.environ.get("OPENAI_API_KEY"):
-            llm = _OpenAILLM(model=model or "gpt-4o")
-        else:
-            raise EnvironmentError(
-                "No LLM API key found in the environment.\n"
-                "Set one of:\n"
-                "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-                "  export OPENAI_API_KEY=sk-..."
-            )
-        return cls(llm=llm)
+        return cls(llm=_build_llm_from_env(model))
 
     # ------------------------------------------------------------------
     # Standards loaders
