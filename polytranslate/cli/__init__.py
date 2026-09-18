@@ -1,8 +1,9 @@
 """polytranslate CLI — translate legacy code and extract coding standards."""
 from __future__ import annotations
 
+import glob as _glob
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 try:
     import typer
@@ -160,6 +161,105 @@ def translate_java_to_cobol(
     out_path.write_text(cobol_code, encoding="utf-8")
     console.print(f"[green]Written:[/green] {out_path}")
     console.print("[yellow]Review the generated code before using in production.[/yellow]")
+
+
+# ------------------------------------------------------------------
+# translate java-to-cobol-batch
+# ------------------------------------------------------------------
+
+@translate_app.command(name="java-to-cobol-batch")
+def translate_java_to_cobol_batch(
+    pattern: str = typer.Argument(
+        ..., help="Glob pattern for Java files, e.g. 'src/**/*.java' or '*.java'.",
+    ),
+    standards: Optional[Path] = typer.Option(
+        None, "--standards", "-s",
+        help=".cbl/.cob or .md/.txt standards file to learn naming from (loaded once for all files).",
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o",
+        help="Output directory. Default: ./cobol_output/",
+    ),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Override LLM model name."),
+    no_normalize: bool = typer.Option(False, "--no-normalize", help="Skip COBOLNormalizer pass."),
+    workers: int = typer.Option(3, "--workers", "-w", help="Max parallel translations (default 3)."),
+) -> None:
+    """Translate multiple Java files to COBOL in parallel.
+
+    Standards are loaded once and reused for all files. Up to --workers files
+    are translated concurrently.
+
+    Examples::
+
+        polytranslate translate java-to-cobol-batch "src/**/*.java" -s CLAIMS.cbl -o ./cobol/
+        polytranslate translate java-to-cobol-batch "*.java" --workers 5
+    """
+    import concurrent.futures as _cf
+
+    from polytranslate.translators.java_to_cobol import JavaToCOBOLTranslator
+
+    # Expand glob
+    matched = sorted(_glob.glob(pattern, recursive=True))
+    java_files: List[Path] = [Path(p) for p in matched if Path(p).suffix.lower() == ".java"]
+    if not java_files:
+        console.print(f"[red]No .java files matched: {pattern}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Found {len(java_files)} Java files[/bold]")
+
+    # Build translator once (standards loaded once, cached)
+    try:
+        translator = JavaToCOBOLTranslator.from_env(model=model)
+    except EnvironmentError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if standards:
+        console.print(f"[bold]Loading standards[/bold] from {standards.name}…")
+        try:
+            translator.load_standards(str(standards))
+            s = translator.standards
+            console.print(
+                f"  prefixes: {s.var_prefixes}  |  pattern: {s.paragraph_pattern}  |  "
+                f"nesting: {s.max_nesting_levels}"
+            )
+        except Exception as exc:
+            console.print(f"[red]Failed to load standards: {exc}[/red]")
+            raise typer.Exit(1)
+
+    out_dir = output or Path(".") / "cobol_output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    normalize = not no_normalize
+
+    ok: List[str] = []
+    failed: List[str] = []
+
+    def _translate_one(java_file: Path) -> tuple[Path, str]:
+        size = java_file.stat().st_size
+        if size == 0 or size > _MAX_JAVA_SIZE:
+            raise ValueError(f"Skipping {java_file.name}: empty or too large ({size // 1024} KB)")
+        java_code = java_file.read_text(encoding="utf-8")
+        return java_file, translator.translate(java_code, normalize=normalize)
+
+    with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        future_map = {pool.submit(_translate_one, f): f for f in java_files}
+        for future in _cf.as_completed(future_map):
+            src = future_map[future]
+            try:
+                java_file, cobol_code = future.result()
+                out_path = out_dir / (java_file.stem + ".cbl")
+                out_path.write_text(cobol_code, encoding="utf-8")
+                validation = translator.validate(cobol_code)
+                status = "[green]✓[/green]" if validation.valid else "[yellow]⚠[/yellow]"
+                console.print(f"  {status} {java_file.name} → {out_path.name}")
+                ok.append(java_file.name)
+            except Exception as exc:
+                console.print(f"  [red]✗ {src.name}: {exc}[/red]")
+                failed.append(src.name)
+
+    console.print(f"\n[bold]Done:[/bold] {len(ok)} translated, {len(failed)} failed")
+    if failed:
+        raise typer.Exit(1)
 
 
 # ------------------------------------------------------------------
