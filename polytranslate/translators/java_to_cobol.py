@@ -3,16 +3,19 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-from typing import Optional
+from typing import List, Optional
 
+from polytranslate.utils.cobol_normalizer import COBOLNormalizer
 from polytranslate.utils.cobol_standards_extractor import (
     COBOLStandards,
     COBOLStandardsExtractor,
     load_standards,
 )
+from polytranslate.utils.cobol_validator import COBOLValidator, ValidationResult
+from polytranslate.utils.java_chunker import COBOLMerger, JavaChunk, JavaChunker
 
-# Blocker #4: abort LLM calls that hang indefinitely
 _LLM_TIMEOUT_SECONDS = 60
+_CHUNK_THRESHOLD_LINES = 150
 
 
 # ------------------------------------------------------------------
@@ -20,8 +23,6 @@ _LLM_TIMEOUT_SECONDS = 60
 # ------------------------------------------------------------------
 
 class _AnthropicLLM:
-    """Thin wrapper around the Anthropic SDK satisfying the .invoke() contract."""
-
     def __init__(self, model: str = "claude-sonnet-5", api_key: Optional[str] = None,
                  base_url: Optional[str] = None) -> None:
         try:
@@ -50,10 +51,7 @@ class _AnthropicLLM:
 
 
 class _OpenAILLM:
-    """Thin wrapper around the OpenAI SDK satisfying the .invoke() contract.
-
-    Also used for OpenAI-compatible APIs: KeyBridge, DeepSeek, Groq, Ollama.
-    """
+    """Also used for OpenAI-compatible APIs: KeyBridge, DeepSeek, Groq, Ollama."""
 
     def __init__(self, model: str = "gpt-4o", api_key: Optional[str] = None,
                  base_url: Optional[str] = None) -> None:
@@ -85,47 +83,37 @@ class _OpenAILLM:
 def _build_llm_from_env(model: Optional[str]) -> object:
     """Detect LLM config from environment variables.
 
-    Priority order:
-      1. KEYBRIDGE_URL + KEYBRIDGE_TOKEN  — proxy (all keys centralised in KeyBridge)
-      2. ANTHROPIC_API_KEY               — Anthropic direct
-      3. OPENAI_API_KEY                  — OpenAI direct
-      4. DEEPSEEK_API_KEY                — DeepSeek direct (OpenAI-compatible)
-      5. GROQ_API_KEY                    — Groq direct (OpenAI-compatible)
-
-    Raises EnvironmentError when no option is configured.
+    Priority:
+      1. KEYBRIDGE_URL + KEYBRIDGE_TOKEN  (proxy — keys centralised)
+      2. ANTHROPIC_API_KEY
+      3. OPENAI_API_KEY
+      4. DEEPSEEK_API_KEY                (OpenAI-compatible)
+      5. GROQ_API_KEY                    (OpenAI-compatible)
     """
     kb_url = os.environ.get("KEYBRIDGE_URL", "").strip()
     kb_token = os.environ.get("KEYBRIDGE_TOKEN", "").strip()
     if kb_url and kb_token:
-        # KeyBridge speaks both the Anthropic and OpenAI messages API.
-        # Use the OpenAI-compatible path so a single _OpenAILLM handles any
-        # model the proxy routes to (claude, gpt-4o, deepseek-chat, …).
         return _OpenAILLM(
             model=model or "claude-sonnet-5",
             api_key=kb_token,
             base_url=kb_url.rstrip("/") + "/v1",
         )
-
     if os.environ.get("ANTHROPIC_API_KEY"):
         return _AnthropicLLM(model=model or "claude-sonnet-5")
-
     if os.environ.get("OPENAI_API_KEY"):
         return _OpenAILLM(model=model or "gpt-4o")
-
     if os.environ.get("DEEPSEEK_API_KEY"):
         return _OpenAILLM(
             model=model or "deepseek-chat",
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url="https://api.deepseek.com/v1",
         )
-
     if os.environ.get("GROQ_API_KEY"):
         return _OpenAILLM(
             model=model or "llama-3.3-70b-versatile",
             api_key=os.environ["GROQ_API_KEY"],
             base_url="https://api.groq.com/openai/v1",
         )
-
     raise EnvironmentError(
         "No LLM configured. Set one of:\n"
         "  KEYBRIDGE_URL + KEYBRIDGE_TOKEN  (proxy — recommended for teams)\n"
@@ -145,33 +133,34 @@ class JavaToCOBOLTranslator:
 
     Three ways to create:
 
-    1. Auto-detect from environment (KeyBridge, Anthropic, OpenAI, DeepSeek, Groq)::
+    1. Auto-detect from environment (KeyBridge → Anthropic → OpenAI → DeepSeek → Groq)::
 
         translator = JavaToCOBOLTranslator.from_env()
 
-    2. Bring your own LLM (LangChain-compatible or any object with .invoke())::
+    2. Bring your own LLM::
 
         translator = JavaToCOBOLTranslator(llm=ChatAnthropic(...))
 
-    3. No LLM — useful for standards loading / prompt inspection only::
+    3. No LLM — for standards loading / prompt inspection only::
 
         translator = JavaToCOBOLTranslator()
         translator.load_standards("CLAIMS.cbl")
     """
 
-    def __init__(self, llm=None, standards: Optional[COBOLStandards] = None) -> None:
+    def __init__(self, llm=None, standards: Optional[COBOLStandards] = None,
+                 chunk_threshold: int = _CHUNK_THRESHOLD_LINES) -> None:
         self.llm = llm
         self.standards = standards
+        self.chunk_threshold = chunk_threshold
+        self._chunker = JavaChunker(max_lines=chunk_threshold)
+        self._merger = COBOLMerger()
+        self._validator = COBOLValidator()
 
     @classmethod
     def from_env(cls, model: Optional[str] = None) -> "JavaToCOBOLTranslator":
         """Create a translator from environment variables.
 
-        Detection order:
-          KEYBRIDGE_URL + KEYBRIDGE_TOKEN → Anthropic → OpenAI → DeepSeek → Groq
-
-        Args:
-            model: Override the default model name for the detected provider.
+        Detection order: KEYBRIDGE → ANTHROPIC → OPENAI → DEEPSEEK → GROQ
         """
         return cls(llm=_build_llm_from_env(model))
 
@@ -180,26 +169,30 @@ class JavaToCOBOLTranslator:
     # ------------------------------------------------------------------
 
     def load_standards_from_file(self, cobol_file: str) -> None:
-        """Extract standards from an existing .cbl/.cob/.cpy file."""
         self.standards = COBOLStandardsExtractor().extract_from_file(cobol_file)
 
     def load_standards_from_doc(self, doc_file: str) -> None:
-        """Extract standards from a .md/.txt documentation file."""
         self.standards = COBOLStandardsExtractor().extract_from_documentation(doc_file)
 
     def load_standards(self, source: str) -> None:
-        """Auto-detect file type and load standards (COBOL source or doc)."""
         self.standards = load_standards(source)
 
     # ------------------------------------------------------------------
     # Translation
     # ------------------------------------------------------------------
 
-    def translate(self, java_code: str) -> str:
+    def translate(self, java_code: str, normalize: bool = True) -> str:
         """Translate *java_code* to COBOL.
 
-        Raises ValueError when no LLM is configured.
-        Raises TimeoutError when the LLM does not respond within 60 seconds.
+        Args:
+            java_code: Java source code string.
+            normalize: Run COBOLNormalizer on the output (default True).
+
+        Returns the COBOL string. Call ``validate(cobol)`` separately to
+        check structural correctness.
+
+        Raises ValueError if no LLM is configured.
+        Raises TimeoutError if the LLM does not respond within 60 s.
         """
         if self.llm is None:
             raise ValueError(
@@ -207,23 +200,80 @@ class JavaToCOBOLTranslator:
                 "Pass llm= at construction or use JavaToCOBOLTranslator.from_env()."
             )
 
+        if self._chunker.should_chunk(java_code):
+            cobol = self._translate_chunked(java_code)
+        else:
+            cobol = self._translate_single(java_code)
+
+        if normalize:
+            standards_dict = self.standards.to_dict() if self.standards else None
+            cobol = COBOLNormalizer(standards=standards_dict).normalize(cobol)
+
+        return cobol
+
+    def validate(self, cobol: str) -> ValidationResult:
+        """Validate the structural correctness of generated COBOL."""
+        return self._validator.validate(cobol)
+
+    def refine(self, java_code: str, current_cobol: str, feedback: str,
+               normalize: bool = True) -> str:
+        """Refine a previous translation based on user feedback.
+
+        Args:
+            java_code: Original Java source (for context).
+            current_cobol: The COBOL output you want to improve.
+            feedback: What's wrong / what to change.
+            normalize: Run COBOLNormalizer on the result (default True).
+        """
+        if self.llm is None:
+            raise ValueError("An LLM must be provided. Use from_env() or pass llm=.")
+
+        prompt = self._build_refine_prompt(java_code, current_cobol, feedback)
+        result_str = self._invoke(prompt)
+
+        if normalize:
+            standards_dict = self.standards.to_dict() if self.standards else None
+            result_str = COBOLNormalizer(standards=standards_dict).normalize(result_str)
+
+        return result_str
+
+    # ------------------------------------------------------------------
+    # Internal translation
+    # ------------------------------------------------------------------
+
+    def _translate_single(self, java_code: str) -> str:
         prompt = (
             self._build_prompt_with_standards(java_code)
             if self.standards
             else self._build_generic_prompt(java_code)
         )
+        return self._invoke(prompt)
 
-        # Blocker #4: wrap LLM call with a hard timeout
+    def _translate_chunked(self, java_code: str) -> str:
+        """Translate large Java file method-by-method, then merge."""
+        chunks = self._chunker.chunk(java_code)
+        cobol_parts: List[str] = []
+
+        for chunk in chunks:
+            cobol_parts.append(self._translate_chunk(chunk))
+
+        return self._merger.merge(cobol_parts)
+
+    def _translate_chunk(self, chunk: JavaChunk) -> str:
+        prompt = self._build_chunk_prompt(chunk)
+        return self._invoke(prompt)
+
+    def _invoke(self, prompt: str) -> str:
+        """Call LLM with hard timeout. Returns raw content string."""
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(self.llm.invoke, prompt)
             try:
                 result = future.result(timeout=_LLM_TIMEOUT_SECONDS)
             except concurrent.futures.TimeoutError:
                 raise TimeoutError(
-                    f"Translation timed out after {_LLM_TIMEOUT_SECONDS}s. "
-                    "The LLM API may be overloaded — try again or use a different model."
+                    f"LLM timed out after {_LLM_TIMEOUT_SECONDS}s. "
+                    "Try again or use a faster model."
                 ) from None
-
         return result.content if hasattr(result, "content") else str(result)
 
     # ------------------------------------------------------------------
@@ -260,23 +310,64 @@ Start with IDENTIFICATION DIVISION and end with STOP RUN."""
     def _build_generic_prompt(self, java_code: str) -> str:
         return f"""You are a COBOL expert. Convert the following Java code to COBOL.
 
-Follow these general COBOL standards:
-- Working-storage variables: WS-* prefix
-- Constants: WC-* prefix
+Standards:
+- Working-storage variables: WS-* prefix, constants: WC-* prefix
 - Paragraph names: ACTION-OBJECT pattern (e.g., CALCULATE-TOTAL)
-- All uppercase with dashes between words
-- Max 29 characters for names
-- Use MOVE, PERFORM, COMPUTE, IF/END-IF idioms
+- All uppercase with dashes, max 30 chars per name
+- Use MOVE, PERFORM, COMPUTE, IF/END-IF
 
-Java code to convert:
+Java code:
 ```java
 {java_code}
 ```
 
-Generate COBOL code that:
-1. Is functionally equivalent to the Java code
-2. Uses proper COBOL syntax and all four divisions
-3. Includes helpful comments
+Output ONLY valid COBOL — no markdown fences or explanations.
+Start with IDENTIFICATION DIVISION and end with STOP RUN."""
 
-Output ONLY the COBOL code — no markdown fences or explanations.
+    def _build_chunk_prompt(self, chunk: JavaChunk) -> str:
+        standards_text = (
+            COBOLStandardsExtractor().to_prompt_instructions(self.standards)
+            if self.standards
+            else "Use WS- for variables, WC- for constants, ACTION-OBJECT for paragraphs."
+        )
+        return f"""You are a COBOL expert. You are translating a large Java class piece by piece.
+This is {chunk.label()}.
+
+{standards_text}
+
+Translate ONLY the methods shown. Include all variable declarations needed for these methods.
+This output will be merged with other chunks — do NOT add STOP RUN yet unless this is the last chunk.
+{'This IS the last chunk — add STOP RUN at the end.' if chunk.is_last else 'This is NOT the last chunk — do NOT add STOP RUN.'}
+
+Java code (chunk {chunk.index}/{chunk.total}):
+```java
+{chunk.code}
+```
+
+Output ONLY COBOL with all four divisions. No markdown fences."""
+
+    def _build_refine_prompt(self, java_code: str, current_cobol: str, feedback: str) -> str:
+        standards_text = (
+            COBOLStandardsExtractor().to_prompt_instructions(self.standards)
+            if self.standards
+            else ""
+        )
+        standards_section = f"\n{standards_text}\n" if standards_text else ""
+        return f"""You are a COBOL expert. You previously translated the following Java code to COBOL.
+The user has reviewed your output and provided feedback. Produce an improved version.
+{standards_section}
+Original Java:
+```java
+{java_code}
+```
+
+Your previous COBOL translation:
+```
+{current_cobol}
+```
+
+User feedback: {feedback}
+
+Produce a corrected COBOL version that addresses the feedback.
+Output ONLY the COBOL code — no markdown fences, no explanations.
 Start with IDENTIFICATION DIVISION and end with STOP RUN."""

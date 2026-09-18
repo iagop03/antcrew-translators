@@ -30,7 +30,12 @@ Repository = "https://github.com/iagop03/polytranslate"
 Issues = "https://github.com/iagop03/polytranslate/issues"
 
 [project.optional-dependencies]
+cli = ["typer>=0.12", "rich>=13.0"]
 dev = ["pytest", "pytest-cov", "ruff"]
+all = ["typer>=0.12", "rich>=13.0"]
+
+[project.scripts]
+polytranslate = "polytranslate.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["polytranslate"]
