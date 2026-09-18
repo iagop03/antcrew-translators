@@ -108,7 +108,7 @@ class ParagraphNode(ASTNode):
 @dataclass
 class StatementNode(ASTNode):
     """Generic statement — subclasses represent specific verbs."""
-    verb: str
+    verb: str = ""
     raw: str = ""
 
 
