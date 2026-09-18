@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
-
-from polytranslate.languages.cobol.parser import CobolParser
 from polytranslate.languages.cobol.ast_mapper import CobolASTMapper, _pic_to_type
-
+from polytranslate.languages.cobol.parser import CobolParser
 
 SAMPLE = textwrap.dedent("""\
     IDENTIFICATION DIVISION.

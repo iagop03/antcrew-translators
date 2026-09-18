@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 from typing import Optional
 
 from polytranslate.utils.cobol_standards_extractor import (
@@ -14,12 +15,104 @@ from polytranslate.utils.cobol_standards_extractor import (
 _LLM_TIMEOUT_SECONDS = 60
 
 
+# ------------------------------------------------------------------
+# Minimal LLM wrappers (no LangChain required)
+# ------------------------------------------------------------------
+
+class _AnthropicLLM:
+    """Thin wrapper around the Anthropic SDK satisfying the .invoke() contract."""
+
+    def __init__(self, model: str = "claude-sonnet-5") -> None:
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError("pip install anthropic") from None
+        self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        self._model = model
+
+    def invoke(self, prompt: str):
+        msg = self._client.messages.create(
+            model=self._model,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        class _Result:
+            content = msg.content[0].text
+
+        return _Result()
+
+
+class _OpenAILLM:
+    """Thin wrapper around the OpenAI SDK satisfying the .invoke() contract."""
+
+    def __init__(self, model: str = "gpt-4o") -> None:
+        try:
+            import openai
+        except ImportError:
+            raise ImportError("pip install openai") from None
+        self._client = openai.OpenAI()  # reads OPENAI_API_KEY from env
+        self._model = model
+
+    def invoke(self, prompt: str):
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4096,
+        )
+
+        class _Result:
+            content = resp.choices[0].message.content
+
+        return _Result()
+
+
+# ------------------------------------------------------------------
+# Translator
+# ------------------------------------------------------------------
+
 class JavaToCOBOLTranslator:
-    """Translate Java code to COBOL, respecting company coding standards."""
+    """Translate Java code to COBOL, respecting company coding standards.
+
+    Two ways to create:
+
+    1. Bring your own LLM (LangChain-compatible or any object with .invoke())::
+
+        translator = JavaToCOBOLTranslator(llm=ChatAnthropic(...))
+
+    2. Auto-detect from environment (reads ANTHROPIC_API_KEY / OPENAI_API_KEY)::
+
+        translator = JavaToCOBOLTranslator.from_env()
+    """
 
     def __init__(self, llm=None, standards: Optional[COBOLStandards] = None) -> None:
         self.llm = llm
         self.standards = standards
+
+    @classmethod
+    def from_env(cls, model: Optional[str] = None) -> "JavaToCOBOLTranslator":
+        """Create a translator using an API key from the environment.
+
+        Checks ANTHROPIC_API_KEY first, then OPENAI_API_KEY.
+        Raises EnvironmentError if neither is set.
+
+        Args:
+            model: Override the default model name. Pass e.g. ``"claude-opus-5"``
+                   or ``"gpt-4o-mini"``. When omitted, uses ``claude-sonnet-5``
+                   (Anthropic) or ``gpt-4o`` (OpenAI).
+        """
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            llm = _AnthropicLLM(model=model or "claude-sonnet-5")
+        elif os.environ.get("OPENAI_API_KEY"):
+            llm = _OpenAILLM(model=model or "gpt-4o")
+        else:
+            raise EnvironmentError(
+                "No LLM API key found in the environment.\n"
+                "Set one of:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+                "  export OPENAI_API_KEY=sk-..."
+            )
+        return cls(llm=llm)
 
     # ------------------------------------------------------------------
     # Standards loaders
@@ -50,7 +143,7 @@ class JavaToCOBOLTranslator:
         if self.llm is None:
             raise ValueError(
                 "An LLM must be provided to translate. "
-                "Pass llm= at construction or call translator.llm = build_llm('claude')."
+                "Pass llm= at construction or use JavaToCOBOLTranslator.from_env()."
             )
 
         prompt = (

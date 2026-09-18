@@ -6,7 +6,6 @@ import pytest
 from polytranslate.translators.java_to_cobol import JavaToCOBOLTranslator
 from polytranslate.utils.cobol_standards_extractor import COBOLStandardsExtractor
 
-
 SAMPLE_COBOL = """
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CLAIMS-PROCESSOR.
@@ -211,3 +210,45 @@ class TestTranslatorStandardsLoading:
         prompt = t._build_generic_prompt(SAMPLE_JAVA)
         assert "WS-" in prompt
         assert "COBOL" in prompt
+
+
+# ------------------------------------------------------------------
+# JavaToCOBOLTranslator.from_env()
+# ------------------------------------------------------------------
+
+class TestFromEnv:
+    def test_raises_without_keys(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
+            JavaToCOBOLTranslator.from_env()
+
+    def test_uses_anthropic_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Should not raise; we don't instantiate the Anthropic client here
+        # because the ImportError from the missing SDK would surface instead.
+        # Just verify the env branch is taken by checking the llm type name.
+        try:
+            t = JavaToCOBOLTranslator.from_env()
+            assert type(t.llm).__name__ == "_AnthropicLLM"
+        except ImportError:
+            pytest.skip("anthropic package not installed")
+
+    def test_uses_openai_fallback(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        try:
+            t = JavaToCOBOLTranslator.from_env()
+            assert type(t.llm).__name__ == "_OpenAILLM"
+        except ImportError:
+            pytest.skip("openai package not installed")
+
+    def test_model_override(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        try:
+            t = JavaToCOBOLTranslator.from_env(model="claude-opus-5")
+            assert t.llm._model == "claude-opus-5"
+        except ImportError:
+            pytest.skip("anthropic package not installed")
