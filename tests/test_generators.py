@@ -5,9 +5,9 @@ import textwrap
 
 import pytest
 
-from translators.languages.cobol.parser import CobolParser
-from translators.targets.java import JavaGenerator
-from translators.targets.golang import GoGenerator
+from polytranslate.languages.cobol.parser import CobolParser
+from polytranslate.targets.java import JavaGenerator
+from polytranslate.targets.golang import GoGenerator
 
 SAMPLE = textwrap.dedent("""\
     IDENTIFICATION DIVISION.

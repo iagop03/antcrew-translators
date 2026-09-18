@@ -7,7 +7,7 @@ Produces:
 """
 from __future__ import annotations
 
-from translators.core.ast import (
+from polytranslate.core.ast import (
     CallNode,
     IfNode,
     MoveNode,
@@ -15,8 +15,8 @@ from translators.core.ast import (
     ProgramNode,
     StatementNode,
 )
-from translators.core.generator_base import BaseGenerator, GeneratedFile
-from translators.languages.cobol.ast_mapper import CobolASTMapper, NormalisedField, NormalisedProgram
+from polytranslate.core.generator_base import BaseGenerator, GeneratedFile
+from polytranslate.languages.cobol.ast_mapper import CobolASTMapper, NormalisedField, NormalisedProgram
 
 
 _PIC_TYPE_MAP = {
@@ -51,8 +51,8 @@ class PythonGenerator(BaseGenerator):
 
     Usage::
 
-        from translators.languages.cobol import CobolParser
-        from translators.targets.python import PythonGenerator
+        from polytranslate.languages.cobol import CobolParser
+        from polytranslate.targets.python import PythonGenerator
 
         ast = CobolParser().parse_file("ORDPRC.cbl")
         files = PythonGenerator().generate(ast)

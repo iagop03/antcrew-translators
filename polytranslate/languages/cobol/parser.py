@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from translators.core.ast import (
+from polytranslate.core.ast import (
     ASTNode,
     CallNode,
     DataItemNode,
@@ -30,7 +30,7 @@ from translators.core.ast import (
     SectionNode,
     StatementNode,
 )
-from translators.core.parser_base import BaseParser, ParseError
+from polytranslate.core.parser_base import BaseParser, ParseError
 
 _DIVISION_RE   = re.compile(r"^\s*(IDENTIFICATION|ENVIRONMENT|DATA|PROCEDURE)\s+DIVISION", re.I)
 _SECTION_RE    = re.compile(r"^\s*(WORKING-STORAGE|FILE|LINKAGE|LOCAL-STORAGE|SCREEN)\s+SECTION", re.I)

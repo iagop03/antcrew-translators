@@ -3,21 +3,21 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "antcrew-translators"
+name = "polytranslate"
 version = "0.1.0"
-description = "COBOL → Python / Java / Go translation pipeline for antcrew"
+description = "Translate legacy code (COBOL) to Python, Java, or Go"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Iago Pueyo", email = "iago.pueyo99@gmail.com" }]
-keywords = ["cobol", "translation", "legacy", "modernization", "antcrew"]
+keywords = ["cobol", "translation", "legacy", "modernization", "transpiler"]
 dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "ruff"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["translators"]
+packages = ["polytranslate"]
 
 [tool.ruff]
 line-length = 100

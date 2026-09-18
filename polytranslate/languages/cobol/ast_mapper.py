@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from translators.core.ast import DataItemNode, ParagraphNode, ProgramNode, SectionNode
+from polytranslate.core.ast import DataItemNode, ParagraphNode, ProgramNode, SectionNode
 
 
 @dataclass

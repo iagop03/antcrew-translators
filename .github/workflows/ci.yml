@@ -42,4 +42,4 @@ jobs:
         run: pip install ruff
 
       - name: Check formatting and style
-        run: ruff check translators/
+        run: ruff check polytranslate/

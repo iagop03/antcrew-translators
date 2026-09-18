@@ -1,15 +1,15 @@
-# antcrew-translators
+# polytranslate
 
-COBOL → Python / Java / Go translation pipeline for [antcrew](https://github.com/iagop03/antcrew).
+Translate legacy code (COBOL) to Python, Java, or Go.
 
-Translates legacy COBOL programs into idiomatic modern code via a three-stage pipeline: parse → normalise → generate. The translator is structural, not semantic — it produces a working skeleton with all data models and paragraphs mapped, which a developer then reviews and refines.
+A three-stage pipeline: parse → normalise → generate. The translator is structural, not semantic — it produces a working skeleton with all data models and paragraphs mapped, which a developer then reviews and refines. Standalone library, zero runtime dependencies, works without antcrew.
 
 ---
 
 ## Install
 
 ```bash
-pip install antcrew-translators
+pip install polytranslate
 ```
 
 Requires Python 3.11+. No external dependencies for the core pipeline.
@@ -19,8 +19,8 @@ Requires Python 3.11+. No external dependencies for the core pipeline.
 ## Quick start
 
 ```python
-from translators.languages.cobol import CobolParser
-from translators.targets.python import PythonGenerator
+from polytranslate.languages.cobol import CobolParser
+from polytranslate.targets.python import PythonGenerator
 
 # 1. Parse COBOL source
 ast = CobolParser().parse_file("ORDPRC.cbl")
@@ -101,14 +101,14 @@ output files
 
 ## Adding a new target language
 
-1. Create `translators/targets/yourlang/generator.py`
+1. Create `polytranslate/targets/yourlang/generator.py`
 2. Subclass `BaseGenerator` and implement `generate(ast: ProgramNode) -> list[GeneratedFile]`
 3. Use `CobolASTMapper().map(ast)` to get a `NormalisedProgram` — it gives you typed fields, paragraphs, and the entry point without needing to understand COBOL PIC syntax
 
 ```python
-from translators.core.generator_base import BaseGenerator, GeneratedFile
-from translators.core.ast import ProgramNode
-from translators.languages.cobol.ast_mapper import CobolASTMapper
+from polytranslate.core.generator_base import BaseGenerator, GeneratedFile
+from polytranslate.core.ast import ProgramNode
+from polytranslate.languages.cobol.ast_mapper import CobolASTMapper
 
 class RustGenerator(BaseGenerator):
     language = "rust"
@@ -123,12 +123,12 @@ class RustGenerator(BaseGenerator):
 
 ## Relationship to antcrew
 
-`antcrew-translators` is a standalone library. It is used by `antcrew.augment.cobol` for static analysis but does not require the full antcrew stack. You can use it independently to translate COBOL files without any antcrew installation.
+`polytranslate` is a standalone library — zero runtime dependencies, works without antcrew. The `antcrew translate-cobol` CLI command uses it as an optional integration, but you can use polytranslate directly without any antcrew installation.
 
 | Package | Purpose |
 |---|---|
 | `antcrew[legacy]` | Add AI to COBOL without rewriting — `COBOLAugment`, `AS400Connector`, `antcrew augment-cobol` CLI |
-| `antcrew-translators` | Full COBOL → Python/Java/Go structural translation |
+| `polytranslate` | Full COBOL → Python/Java/Go structural translation |
 
 ---
 

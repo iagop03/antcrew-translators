@@ -5,8 +5,8 @@ import textwrap
 
 import pytest
 
-from translators.languages.cobol.parser import CobolParser
-from translators.languages.cobol.ast_mapper import CobolASTMapper, _pic_to_type
+from polytranslate.languages.cobol.parser import CobolParser
+from polytranslate.languages.cobol.ast_mapper import CobolASTMapper, _pic_to_type
 
 
 SAMPLE = textwrap.dedent("""\
