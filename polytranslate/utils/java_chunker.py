@@ -187,6 +187,8 @@ class COBOLMerger:
     )
     _PROC_RE = re.compile(r"PROCEDURE\s+DIVISION\.(.*?)$", re.DOTALL | re.IGNORECASE)
     _PROGRAM_ID_RE = re.compile(r"PROGRAM-ID\.\s*(\S+?)\.", re.IGNORECASE)
+    # Matches a data item declaration: level + name (level 01/05/10/…, not 66/77/88)
+    _DATA_ITEM_RE = re.compile(r"^\s*\d{1,2}\s+([A-Z][A-Z0-9-]+)", re.MULTILINE)
 
     def merge(self, chunks: List[str], program_id: Optional[str] = None) -> str:
         """Merge list of COBOL chunk outputs into one program."""
@@ -211,7 +213,7 @@ class COBOLMerger:
             if proc_m:
                 proc_sections.append(proc_m.group(1).strip())
 
-        ws_body = "\n".join(ws_sections) if ws_sections else "* No variables"
+        ws_body = self._deduplicate_ws(ws_sections) if ws_sections else "* No variables"
         proc_body = "\n".join(proc_sections) if proc_sections else "MAIN.\n    STOP RUN."
 
         return (
@@ -223,3 +225,35 @@ class COBOLMerger:
             f"PROCEDURE DIVISION.\n"
             f"{proc_body}\n"
         )
+
+    def _deduplicate_ws(self, ws_sections: List[str]) -> str:
+        """Merge WORKING-STORAGE sections, dropping duplicate variable names."""
+        seen: set = set()
+        output_lines: List[str] = []
+        current_block: List[str] = []  # lines belonging to the current 01-group
+
+        def flush_block() -> None:
+            if not current_block:
+                return
+            # The first line of a block holds the top-level name
+            m = self._DATA_ITEM_RE.match(current_block[0])
+            name = m.group(1) if m else None
+            if name is None or name not in seen:
+                if name:
+                    seen.add(name)
+                output_lines.extend(current_block)
+            current_block.clear()
+
+        for section in ws_sections:
+            for line in section.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("*"):
+                    current_block.append(line)
+                    continue
+                # New top-level (01) item starts a new block
+                if re.match(r"^\s*01\s+", line, re.IGNORECASE):
+                    flush_block()
+                current_block.append(line)
+
+        flush_block()
+        return "\n".join(output_lines) if output_lines else "* No variables"

@@ -275,12 +275,19 @@ class JavaToCOBOLTranslator:
         return self._invoke(prompt)
 
     def _translate_chunked(self, java_code: str) -> str:
-        """Translate large Java file method-by-method, then merge."""
+        """Translate large Java file method-by-method in parallel, then merge."""
         chunks = self._chunker.chunk(java_code)
-        cobol_parts: List[str] = []
+        cobol_parts: List[str] = [""] * len(chunks)
 
-        for chunk in chunks:
-            cobol_parts.append(self._translate_chunk(chunk))
+        max_workers = min(3, len(chunks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx = {
+                pool.submit(self._translate_chunk, chunk): i
+                for i, chunk in enumerate(chunks)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                cobol_parts[idx] = future.result()  # propagates TimeoutError / exceptions
 
         return self._merger.merge(cobol_parts)
 
