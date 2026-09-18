@@ -1,6 +1,7 @@
 """Translate Java source code to COBOL using an LLM, optionally guided by company standards."""
 from __future__ import annotations
 
+import concurrent.futures
 from typing import Optional
 
 from polytranslate.utils.cobol_standards_extractor import (
@@ -8,6 +9,9 @@ from polytranslate.utils.cobol_standards_extractor import (
     COBOLStandardsExtractor,
     load_standards,
 )
+
+# Blocker #4: abort LLM calls that hang indefinitely
+_LLM_TIMEOUT_SECONDS = 60
 
 
 class JavaToCOBOLTranslator:
@@ -41,6 +45,7 @@ class JavaToCOBOLTranslator:
         """Translate *java_code* to COBOL.
 
         Raises ValueError when no LLM is configured.
+        Raises TimeoutError when the LLM does not respond within 60 seconds.
         """
         if self.llm is None:
             raise ValueError(
@@ -54,7 +59,17 @@ class JavaToCOBOLTranslator:
             else self._build_generic_prompt(java_code)
         )
 
-        result = self.llm.invoke(prompt)
+        # Blocker #4: wrap LLM call with a hard timeout
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.llm.invoke, prompt)
+            try:
+                result = future.result(timeout=_LLM_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f"Translation timed out after {_LLM_TIMEOUT_SECONDS}s. "
+                    "The LLM API may be overloaded — try again or use a different model."
+                ) from None
+
         return result.content if hasattr(result, "content") else str(result)
 
     # ------------------------------------------------------------------

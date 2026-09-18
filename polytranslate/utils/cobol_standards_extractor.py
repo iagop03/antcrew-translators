@@ -1,10 +1,17 @@
 """Extract COBOL coding standards from existing source files or documentation."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# Blocker #2: hard size cap to prevent memory issues on large COBOL corpora
+_MAX_COBOL_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# Optimization #8: on-disk cache so the same file isn't re-extracted in every run
+_CACHE_DIR = Path.home() / ".antcrew" / "standards"
 
 
 @dataclass
@@ -59,17 +66,45 @@ _DEFAULT_SECTION_ORDER = ["IDENTIFICATION", "ENVIRONMENT", "DATA", "PROCEDURE"]
 class COBOLStandardsExtractor:
     """Extract naming and structural patterns from COBOL source or documentation."""
 
+    # Optimization #7: compile all patterns once at class level
+    _VAR_PREFIX_RE = re.compile(r"01\s+([A-Z]+)-", re.MULTILINE)
+    _PARAGRAPH_RE = re.compile(r"^([A-Z][A-Z0-9-]{0,28})\.\s*$", re.MULTILINE)
+    _PERFORM_RE = re.compile(r"^(\s*)PERFORM", re.MULTILINE)
+    _PROC_DIV_WS_RE = re.compile(r"01 WS-")
+    _WS_RE = re.compile(r"(?:Working storage|working-storage)[:\s]+(\w+[-]?)", re.IGNORECASE)
+    _WC_RE = re.compile(r"(?:Constants|Const)[:\s]+(\w+[-]?)", re.IGNORECASE)
+    _LK_RE = re.compile(r"(?:Linkage)[:\s]+(\w+[-]?)", re.IGNORECASE)
+    _PATTERN_RE = re.compile(r"(?:Paragraph Pattern|Pattern)[:\s]+(\{[^}]+\}[^$\n]*)", re.IGNORECASE)
+    _NESTING_RE = re.compile(r"(?:Max Nesting|Nesting)[:\s]+(\d+)", re.IGNORECASE)
+
     def extract_from_file(self, cobol_file: str) -> COBOLStandards:
         """Read a .cbl/.cob/.cpy file and infer standards from its content."""
-        text = Path(cobol_file).read_text(encoding="utf-8", errors="replace")
+        # Blocker #2: validate before reading
+        path = Path(cobol_file)
+        if not path.exists():
+            raise FileNotFoundError(f"COBOL file not found: {cobol_file}")
+        stat = path.stat()
+        if stat.st_size == 0:
+            raise ValueError(f"COBOL file is empty: {cobol_file}")
+        if stat.st_size > _MAX_COBOL_SIZE:
+            raise ValueError(
+                f"COBOL file too large ({stat.st_size / 1024 / 1024:.1f} MB > 50 MB): {cobol_file}"
+            )
+
+        # Optimization #8: return cached result if file hasn't changed
+        cached = self._load_from_cache(path, stat.st_mtime)
+        if cached is not None:
+            return cached
+
+        text = path.read_text(encoding="utf-8", errors="replace")
 
         var_prefixes = self._extract_var_prefixes(text)
-        paragraphs = re.findall(r"^([A-Z][A-Z0-9-]{0,28})\.\s*$", text, re.MULTILINE)
+        paragraphs = self._PARAGRAPH_RE.findall(text)
         paragraph_pattern = self._infer_paragraph_pattern(paragraphs)
         max_nesting = self._detect_max_nesting(text)
         data_org = self._detect_data_organization(text)
 
-        return COBOLStandards(
+        result = COBOLStandards(
             var_prefixes=var_prefixes,
             paragraph_pattern=paragraph_pattern,
             max_nesting_levels=max_nesting,
@@ -82,16 +117,18 @@ class COBOLStandardsExtractor:
                 "paragraphs": paragraphs[:10],
             },
         )
+        self._save_to_cache(path, stat.st_mtime, result)
+        return result
 
     def extract_from_documentation(self, doc_file: str) -> COBOLStandards:
         """Parse a .md or .txt standards document and build a COBOLStandards object."""
         text = Path(doc_file).read_text(encoding="utf-8")
 
-        ws_match = re.search(r"(?:Working storage|working-storage)[:\s]+(\w+[-]?)", text, re.IGNORECASE)
-        wc_match = re.search(r"(?:Constants|Const)[:\s]+(\w+[-]?)", text, re.IGNORECASE)
-        lk_match = re.search(r"(?:Linkage)[:\s]+(\w+[-]?)", text, re.IGNORECASE)
-        pattern_match = re.search(r"(?:Paragraph Pattern|Pattern)[:\s]+(\{[^}]+\}[^$\n]*)", text, re.IGNORECASE)
-        nesting_match = re.search(r"(?:Max Nesting|Nesting)[:\s]+(\d+)", text, re.IGNORECASE)
+        ws_match = self._WS_RE.search(text)
+        wc_match = self._WC_RE.search(text)
+        lk_match = self._LK_RE.search(text)
+        pattern_match = self._PATTERN_RE.search(text)
+        nesting_match = self._NESTING_RE.search(text)
 
         def _strip(val: str) -> str:
             return val.rstrip("-").strip()
@@ -145,7 +182,7 @@ Structure Rules:
     # ------------------------------------------------------------------
 
     def _extract_var_prefixes(self, text: str) -> Dict[str, str]:
-        matches = re.findall(r"01\s+([A-Z]+)-", text)
+        matches = self._VAR_PREFIX_RE.findall(text)
         prefixes: Dict[str, str] = {}
         for prefix in set(matches):
             if prefix == "WS":
@@ -159,15 +196,26 @@ Structure Rules:
         return prefixes or dict(_DEFAULT_PREFIXES)
 
     def _infer_paragraph_pattern(self, paragraphs: List[str]) -> str:
+        """Blocker #5: detect 2-part vs 3-part vs free-form paragraph naming."""
         if not paragraphs:
             return "{ACTION}-{OBJECT}"
-        two_word = sum(1 for p in paragraphs if p.count("-") == 1)
-        if two_word / len(paragraphs) > 0.6:
+
+        total = len(paragraphs)
+        part_counts = [p.count("-") + 1 for p in paragraphs]
+        two_part = sum(1 for c in part_counts if c == 2)
+        three_part = sum(1 for c in part_counts if c == 3)
+        structured = two_part + three_part
+
+        if two_part / total > 0.6:
             return "{ACTION}-{OBJECT}"
+        if three_part / total > 0.4:
+            return "{ACTION}-{OBJECT}-{QUALIFIER}"
+        if structured / total > 0.5:
+            return "{ACTION}-{OBJECT}-{QUALIFIER}" if three_part >= two_part else "{ACTION}-{OBJECT}"
         return "Free-form"
 
     def _detect_max_nesting(self, text: str) -> int:
-        perform_lines = re.findall(r"^(\s*)PERFORM", text, re.MULTILINE)
+        perform_lines = self._PERFORM_RE.findall(text)
         if not perform_lines:
             return 2
         max_indent = max(len(ln) for ln in perform_lines)
@@ -176,9 +224,36 @@ Structure Rules:
     def _detect_data_organization(self, text: str) -> str:
         if "PROCEDURE DIVISION" in text:
             before_proc = text.split("PROCEDURE DIVISION")[0]
-            if before_proc.count("01 WS-") > 0:
+            if self._PROC_DIV_WS_RE.search(before_proc):
                 return "all_variables_at_top"
         return "mixed"
+
+    # ------------------------------------------------------------------
+    # Cache helpers (Optimization #8)
+    # ------------------------------------------------------------------
+
+    def _cache_path(self, cobol_path: Path, mtime: float) -> Path:
+        """Stable cache path keyed by filename + mtime (millisecond precision)."""
+        key = f"{cobol_path.stem}_{int(mtime * 1000)}"
+        return _CACHE_DIR / f"{key}.json"
+
+    def _load_from_cache(self, cobol_path: Path, mtime: float) -> Optional[COBOLStandards]:
+        try:
+            cache = self._cache_path(cobol_path, mtime)
+            if not cache.exists():
+                return None
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            return COBOLStandards.from_dict(data)
+        except Exception:
+            return None
+
+    def _save_to_cache(self, cobol_path: Path, mtime: float, standards: COBOLStandards) -> None:
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache = self._cache_path(cobol_path, mtime)
+            cache.write_text(json.dumps(standards.to_dict()), encoding="utf-8")
+        except Exception:
+            pass  # caching is best-effort; never fail extraction
 
 
 def load_standards(source: Optional[str]) -> Optional[COBOLStandards]:
