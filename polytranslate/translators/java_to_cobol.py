@@ -16,6 +16,8 @@ from polytranslate.utils.java_chunker import COBOLMerger, JavaChunk, JavaChunker
 
 _LLM_TIMEOUT_SECONDS = 60
 _CHUNK_THRESHOLD_LINES = 150
+_MAX_JAVA_BYTES = 1 * 1024 * 1024  # 1 MB
+_MIN_JAVA_CHARS = 50
 
 
 # ------------------------------------------------------------------
@@ -200,6 +202,23 @@ class JavaToCOBOLTranslator:
                 "Pass llm= at construction or use JavaToCOBOLTranslator.from_env()."
             )
 
+        if not java_code or not java_code.strip():
+            raise ValueError("java_code is empty.")
+        if len(java_code.encode()) > _MAX_JAVA_BYTES:
+            raise ValueError(
+                f"java_code exceeds 1 MB ({len(java_code.encode()) // 1024} KB). "
+                "Split large classes into smaller files before translating."
+            )
+        if len(java_code.strip()) < _MIN_JAVA_CHARS:
+            raise ValueError(
+                f"java_code is too short ({len(java_code.strip())} chars). "
+                "Provide a complete Java class or method."
+            )
+        if "class " not in java_code and "interface " not in java_code and "enum " not in java_code:
+            raise ValueError(
+                "java_code does not appear to contain a Java class, interface, or enum."
+            )
+
         if self._chunker.should_chunk(java_code):
             cobol = self._translate_chunked(java_code)
         else:
@@ -227,6 +246,12 @@ class JavaToCOBOLTranslator:
         """
         if self.llm is None:
             raise ValueError("An LLM must be provided. Use from_env() or pass llm=.")
+        if not java_code or not java_code.strip():
+            raise ValueError("java_code is empty.")
+        if not current_cobol or not current_cobol.strip():
+            raise ValueError("current_cobol is empty.")
+        if not feedback or not feedback.strip():
+            raise ValueError("feedback is empty.")
 
         prompt = self._build_refine_prompt(java_code, current_cobol, feedback)
         result_str = self._invoke(prompt)

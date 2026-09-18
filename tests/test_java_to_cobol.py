@@ -198,6 +198,48 @@ class TestTranslatorStandardsLoading:
         with pytest.raises(ValueError, match="LLM must be provided"):
             t.translate(SAMPLE_JAVA)
 
+    def test_translate_empty_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="empty"):
+            t.translate("")
+
+    def test_translate_whitespace_only_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="empty"):
+            t.translate("   \n\t  ")
+
+    def test_translate_too_short_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="too short"):
+            t.translate("class A {}")
+
+    def test_translate_no_class_keyword_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="does not appear"):
+            t.translate("x" * 100)
+
+    def test_translate_oversized_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        # 75_000 * 14 bytes = 1_050_000 > 1_048_576 (1 MB)
+        big = "class A {\n" + ("    // filler\n" * 75_000) + "}"
+        with pytest.raises(ValueError, match="1 MB"):
+            t.translate(big)
+
+    def test_refine_empty_java_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="java_code is empty"):
+            t.refine("", "IDENTIFICATION DIVISION.", "fix it")
+
+    def test_refine_empty_cobol_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="current_cobol is empty"):
+            t.refine(SAMPLE_JAVA, "", "fix it")
+
+    def test_refine_empty_feedback_raises(self):
+        t = JavaToCOBOLTranslator(llm=object())
+        with pytest.raises(ValueError, match="feedback is empty"):
+            t.refine(SAMPLE_JAVA, "IDENTIFICATION DIVISION.", "")
+
     def test_prompt_with_standards_contains_ws(self, cobol_file):
         t = JavaToCOBOLTranslator()
         t.load_standards_from_file(cobol_file)
