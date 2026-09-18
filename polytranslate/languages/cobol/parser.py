@@ -15,22 +15,20 @@ Fixed-format COBOL layout:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 
 from polytranslate.core.ast import (
-    ASTNode,
     CallNode,
     DataItemNode,
     DivisionNode,
     IfNode,
     MoveNode,
-    PerformNode,
     ParagraphNode,
+    PerformNode,
     ProgramNode,
     SectionNode,
     StatementNode,
 )
-from polytranslate.core.parser_base import BaseParser, ParseError
+from polytranslate.core.parser_base import BaseParser
 
 _DIVISION_RE   = re.compile(r"^\s*(IDENTIFICATION|ENVIRONMENT|DATA|PROCEDURE)\s+DIVISION", re.I)
 _SECTION_RE    = re.compile(r"^\s*(WORKING-STORAGE|FILE|LINKAGE|LOCAL-STORAGE|SCREEN)\s+SECTION", re.I)
@@ -171,7 +169,7 @@ class CobolParser(BaseParser):
         if m := _CALL_RE.search(line):
             using_raw = m.group(2) or ""
             using = [u.strip() for u in re.split(r"\s+", using_raw) if u.strip()]
-            return CallNode(raw=line, target=m.group(1).strip())
+            return CallNode(raw=line, target=m.group(1).strip(), using=using)
         if m := _PERFORM_RE.search(line):
             return PerformNode(raw=line, target=m.group(1).strip())
         if m := _IF_RE.search(line):

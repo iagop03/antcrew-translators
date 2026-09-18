@@ -16,8 +16,11 @@ from polytranslate.core.ast import (
     StatementNode,
 )
 from polytranslate.core.generator_base import BaseGenerator, GeneratedFile
-from polytranslate.languages.cobol.ast_mapper import CobolASTMapper, NormalisedField, NormalisedProgram
-
+from polytranslate.languages.cobol.ast_mapper import (
+    CobolASTMapper,
+    NormalisedField,
+    NormalisedProgram,
+)
 
 _TYPE_MAP: dict[str, str] = {
     "text": "string",

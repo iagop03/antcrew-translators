@@ -1,18 +1,18 @@
 """Core AST nodes and base classes."""
 from .ast import (
     ASTNode,
-    ProgramNode,
-    DivisionNode,
-    DataItemNode,
-    ParagraphNode,
-    StatementNode,
     CallNode,
-    MoveNode,
-    PerformNode,
+    DataItemNode,
+    DivisionNode,
     IfNode,
+    MoveNode,
+    ParagraphNode,
+    PerformNode,
+    ProgramNode,
+    StatementNode,
 )
-from .parser_base import BaseParser, ParseError
 from .generator_base import BaseGenerator, GeneratedFile
+from .parser_base import BaseParser, ParseError
 
 __all__ = [
     "ASTNode", "ProgramNode", "DivisionNode", "DataItemNode",

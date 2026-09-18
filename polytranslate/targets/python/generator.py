@@ -16,8 +16,11 @@ from polytranslate.core.ast import (
     StatementNode,
 )
 from polytranslate.core.generator_base import BaseGenerator, GeneratedFile
-from polytranslate.languages.cobol.ast_mapper import CobolASTMapper, NormalisedField, NormalisedProgram
-
+from polytranslate.languages.cobol.ast_mapper import (
+    CobolASTMapper,
+    NormalisedField,
+    NormalisedProgram,
+)
 
 _PIC_TYPE_MAP = {
     "text": "str",
@@ -90,7 +93,7 @@ class PythonGenerator(BaseGenerator):
         lk_fields = norm.linkage_fields
 
         if ws_fields:
-            lines += [f"@dataclass", f"class WorkingStorage:"]
+            lines += ["@dataclass", "class WorkingStorage:"]
             for f in ws_fields:
                 lines.append(f"    {_safe_name(f.name)}: {_py_type(f)} = {_py_default(f)}")
             lines.append("")
@@ -119,10 +122,10 @@ class PythonGenerator(BaseGenerator):
             "",
             f"class {_class_name(norm.program_id)}:",
             f'    """Translated from COBOL {norm.program_id}.',
-            f"",
+            "",
             f"    Original author : {norm.author or 'unknown'}",
             f"    Date written    : {norm.date_written or 'unknown'}",
-            f'    """',
+            '    """',
             "",
             "    def __init__(self) -> None:",
             "        self.ws = WorkingStorage()" if norm.working_storage_fields else "        pass",
